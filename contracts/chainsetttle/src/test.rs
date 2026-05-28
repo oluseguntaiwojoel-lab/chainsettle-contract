@@ -69,6 +69,7 @@ fn build_milestones(env: &Env) -> soroban_sdk::Vec<Milestone> {
             proof_hash: String::from_str(env, ""),
             status: MilestoneStatus::Pending,
             release_after_ledger: 0,
+            proof_submitted_ledger: None,
         },
         Milestone {
             name: String::from_str(env, "In Transit"),
@@ -76,6 +77,7 @@ fn build_milestones(env: &Env) -> soroban_sdk::Vec<Milestone> {
             proof_hash: String::from_str(env, ""),
             status: MilestoneStatus::Pending,
             release_after_ledger: 0,
+            proof_submitted_ledger: None,
         },
         Milestone {
             name: String::from_str(env, "Delivered"),
@@ -83,6 +85,7 @@ fn build_milestones(env: &Env) -> soroban_sdk::Vec<Milestone> {
             proof_hash: String::from_str(env, ""),
             status: MilestoneStatus::Pending,
             release_after_ledger: 0,
+            proof_submitted_ledger: None,
         },
     ]
 }
@@ -98,6 +101,8 @@ fn default_options(_env: &Env) -> ShipmentOptions {
         milestone_mode: MilestoneMode::Parallel,
         holdback_ledgers: 0,
         dispute_cooldown_ledgers: 0,
+        late_penalty_bps_per_ledger: 0,
+        auto_confirm_ledgers: 0,
     }
 }
 
@@ -170,6 +175,7 @@ fn test_create_shipment_invalid_percentages() {
             proof_hash: String::from_str(&t.env, ""),
             status: MilestoneStatus::Pending,
             release_after_ledger: 0,
+            proof_submitted_ledger: None,
         },
         Milestone {
             name: String::from_str(&t.env, "Step 2"),
@@ -177,6 +183,7 @@ fn test_create_shipment_invalid_percentages() {
             proof_hash: String::from_str(&t.env, ""),
             status: MilestoneStatus::Pending,
             release_after_ledger: 0,
+            proof_submitted_ledger: None,
         },
         Milestone {
             name: String::from_str(&t.env, "Step 3"),
@@ -184,6 +191,7 @@ fn test_create_shipment_invalid_percentages() {
             proof_hash: String::from_str(&t.env, ""),
             status: MilestoneStatus::Pending,
             release_after_ledger: 0,
+            proof_submitted_ledger: None,
         },
     ];
 
@@ -549,7 +557,7 @@ fn test_dispute_cooldown_enforced() {
         &t.token_id,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: cooldown },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: cooldown, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     // First dispute on milestone 0.
@@ -593,7 +601,7 @@ fn test_dispute_cooldown_blocks_early_redispute() {
         &t.token_id,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: cooldown },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: cooldown, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
@@ -648,7 +656,7 @@ fn test_cooldown_updated_on_resolve() {
         &t.token_id,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: cooldown },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: cooldown, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
@@ -894,7 +902,7 @@ fn test_non_whitelisted_token_rejected() {
         &other_token,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0 },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 }
 
@@ -981,7 +989,7 @@ fn test_holdback_happy_path() {
         &t.token_id,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: holdback, dispute_cooldown_ledgers: 0 },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: holdback, dispute_cooldown_ledgers: 0, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
@@ -1040,7 +1048,7 @@ fn test_holdback_early_dispute_cancels_hold() {
         &t.token_id,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 200, dispute_cooldown_ledgers: 0 },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 200, dispute_cooldown_ledgers: 0, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
@@ -1176,7 +1184,7 @@ fn test_multisig_both_buyers_must_confirm() {
         &t.token_id,
         &total_amount,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0 },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
@@ -1224,7 +1232,7 @@ fn test_multisig_minority_veto_dispute() {
         &t.token_id,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0 },
+        &ShipmentOptions { response_deadline: 0, penalty_bps: 0, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
@@ -1352,7 +1360,7 @@ fn test_deadline_cancellation_success() {
         &t.token_id,
         &total_amount,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: deadline, penalty_bps, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0 },
+        &ShipmentOptions { response_deadline: deadline, penalty_bps, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
@@ -1386,7 +1394,7 @@ fn test_deadline_cancellation_too_early() {
         &t.token_id,
         &1_000_000_000,
         &build_milestones(&t.env),
-        &ShipmentOptions { response_deadline: 1000, penalty_bps: 500, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0 },
+        &ShipmentOptions { response_deadline: 1000, penalty_bps: 500, milestone_mode: MilestoneMode::Parallel, holdback_ledgers: 0, dispute_cooldown_ledgers: 0, late_penalty_bps_per_ledger: 0, auto_confirm_ledgers: 0 },
     );
 
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));

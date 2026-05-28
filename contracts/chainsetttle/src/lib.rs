@@ -41,6 +41,8 @@ pub struct Milestone {
     pub status: MilestoneStatus,
     /// Set when holdback_ledgers > 0 and milestone is confirmed.
     pub release_after_ledger: u32,
+    /// Ledger at which proof was submitted; used for auto-confirmation timeout.
+    pub proof_submitted_ledger: Option<u32>,
 }
 
 #[contracttype]
@@ -75,6 +77,12 @@ pub struct Shipment {
     pub dispute_cooldown_ledgers: u32,
     /// Ledger at which the last dispute was resolved; None if no dispute has been resolved yet.
     pub last_dispute_resolved_ledger: Option<u32>,
+    // ── New: late-delivery penalty ─────────────────────────────
+    /// Basis points penalty per ledger of delay past milestone deadline (0 = no penalty).
+    pub late_penalty_bps_per_ledger: u32,
+    // ── New: auto-confirmation ────────────────────────────────
+    /// Ledgers after proof submission before auto-confirmation (0 = disabled).
+    pub auto_confirm_ledgers: u32,
 }
 
 /// Cancellation policy stored separately (keeps Shipment within the contracttype field limit).
@@ -93,6 +101,15 @@ pub struct CancelPolicy {
 pub struct AmendmentProposal {
     pub new_percent: u32,
     pub new_name: String,
+    pub buyer_agreed: bool,
+    pub supplier_agreed: bool,
+}
+
+/// Pending arbiter rotation proposal.
+#[contracttype]
+#[derive(Clone)]
+pub struct ArbiterRotationProposal {
+    pub new_arbiter: Address,
     pub buyer_agreed: bool,
     pub supplier_agreed: bool,
 }
@@ -120,6 +137,10 @@ pub struct ShipmentOptions {
     pub holdback_ledgers: u32,
     /// Minimum ledgers between successive dispute resolutions (0 = no cooldown).
     pub dispute_cooldown_ledgers: u32,
+    /// Basis points penalty per ledger of delay past milestone deadline (0 = no penalty).
+    pub late_penalty_bps_per_ledger: u32,
+    /// Ledgers after proof submission before auto-confirmation (0 = disabled).
+    pub auto_confirm_ledgers: u32,
 }
 
 // ============================================================
@@ -142,6 +163,8 @@ pub enum DataKey {
     AllowedTokens,
     /// Global pause flag.
     Paused,
+    /// Pending arbiter rotation proposal: (new_arbiter, buyer_agreed, supplier_agreed).
+    ArbiterRotation(String),
 }
 
 // ============================================================
@@ -324,6 +347,8 @@ impl ChainSettleContract {
         let milestone_mode = options.milestone_mode;
         let holdback_ledgers = options.holdback_ledgers;
         let dispute_cooldown_ledgers = options.dispute_cooldown_ledgers;
+        let late_penalty_bps_per_ledger = options.late_penalty_bps_per_ledger;
+        let auto_confirm_ledgers = options.auto_confirm_ledgers;
 
         if buyers.is_empty() {
             panic!("at least one buyer is required");
@@ -385,6 +410,7 @@ impl ChainSettleContract {
             m.status = MilestoneStatus::Pending;
             m.proof_hash = String::from_str(&env, "");
             m.release_after_ledger = 0;
+            m.proof_submitted_ledger = None;
             clean_milestones.push_back(m);
         }
 
@@ -404,6 +430,8 @@ impl ChainSettleContract {
             holdback_ledgers,
             dispute_cooldown_ledgers,
             last_dispute_resolved_ledger: None,
+            late_penalty_bps_per_ledger,
+            auto_confirm_ledgers,
         };
 
         env.storage()
@@ -515,8 +543,10 @@ impl ChainSettleContract {
             }
         }
 
+        let current_ledger = env.ledger().sequence();
         milestone.proof_hash = proof_hash;
         milestone.status = MilestoneStatus::ProofSubmitted;
+        milestone.proof_submitted_ledger = Some(current_ledger);
         shipment.milestones.set(milestone_index, milestone);
 
         env.storage()
@@ -526,7 +556,7 @@ impl ChainSettleContract {
         // Record the ledger at which proof was submitted (used by supplier_cancel).
         env.storage().persistent().set(
             &DataKey::ProofSubmittedAt(shipment_id.clone(), milestone_index),
-            &env.ledger().sequence(),
+            &current_ledger,
         );
 
         env.events().publish(
@@ -564,7 +594,30 @@ impl ChainSettleContract {
             panic!("milestone proof not yet submitted");
         }
 
-        let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+        // Check if auto-confirmation window has passed; if so, reject manual confirmation.
+        if shipment.auto_confirm_ledgers > 0 {
+            if let Some(proof_ledger) = milestone.proof_submitted_ledger {
+                let auto_confirm_ledger = proof_ledger + shipment.auto_confirm_ledgers;
+                if env.ledger().sequence() >= auto_confirm_ledger {
+                    panic!("milestone has auto-confirmed; use claim_auto_confirmation");
+                }
+            }
+        }
+
+        let mut payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+
+        // Apply late-delivery penalty if configured.
+        let mut penalty_deducted: i128 = 0;
+        if shipment.late_penalty_bps_per_ledger > 0 {
+            if let Some(proof_ledger) = milestone.proof_submitted_ledger {
+                let delay_ledgers = env.ledger().sequence() - proof_ledger;
+                let penalty = (payment * (shipment.late_penalty_bps_per_ledger as i128 * delay_ledgers as i128)) / 10_000;
+                if penalty > 0 && penalty < payment {
+                    penalty_deducted = penalty;
+                    payment -= penalty;
+                }
+            }
+        }
 
         if shipment.holdback_ledgers > 0 {
             milestone.release_after_ledger =
@@ -578,7 +631,7 @@ impl ChainSettleContract {
 
             env.events().publish(
                 (Symbol::new(&env, "payment_held"), shipment_id.clone()),
-                (milestone_index, milestone.release_after_ledger),
+                (milestone_index, milestone.release_after_ledger, penalty_deducted),
             );
         } else {
             let mut fee_amount: i128 = 0;
@@ -595,6 +648,16 @@ impl ChainSettleContract {
                 &net_payment,
             );
 
+            // Return penalty to buyer if any.
+            if penalty_deducted > 0 {
+                let primary_buyer = shipment.buyers.get(0).unwrap();
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &primary_buyer,
+                    &penalty_deducted,
+                );
+            }
+
             if Self::all_milestones_done(&shipment) {
                 shipment.status = ShipmentStatus::Completed;
             }
@@ -605,7 +668,7 @@ impl ChainSettleContract {
 
             env.events().publish(
                 (Symbol::new(&env, "milestone_confirmed"), shipment_id.clone()),
-                (milestone_index, payment, fee_amount),
+                (milestone_index, payment, fee_amount, penalty_deducted),
             );
         }
     }
@@ -771,6 +834,16 @@ impl ChainSettleContract {
             && milestone.status != MilestoneStatus::ConfirmedHeld
         {
             panic!("can only dispute a submitted or held proof");
+        }
+
+        // Check if auto-confirmation window has passed; if so, reject dispute.
+        if shipment.auto_confirm_ledgers > 0 {
+            if let Some(proof_ledger) = milestone.proof_submitted_ledger {
+                let auto_confirm_ledger = proof_ledger + shipment.auto_confirm_ledgers;
+                if env.ledger().sequence() >= auto_confirm_ledger {
+                    panic!("milestone has auto-confirmed; dispute window closed");
+                }
+            }
         }
 
         // Cancel any holdback window.
@@ -1170,6 +1243,179 @@ impl ChainSettleContract {
         env.events().publish(
             (Symbol::new(&env, "supplier_transferred"), shipment_id.clone()),
             (current_supplier, new_supplier),
+        );
+    }
+
+    // ----------------------------------------------------------
+    // ARBITER ROTATION
+    // ----------------------------------------------------------
+
+    /// Buyer or supplier proposes to rotate the arbiter.
+    /// When both parties agree on the same new_arbiter, the rotation is applied.
+    pub fn propose_arbiter_rotation(
+        env: Env,
+        caller: Address,
+        shipment_id: String,
+        new_arbiter: Address,
+    ) {
+        Self::assert_not_paused(&env);
+        caller.require_auth();
+
+        let shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        let is_buyer = Self::is_buyer(&shipment, &caller);
+        if !is_buyer && caller != shipment.supplier {
+            panic!("unauthorized");
+        }
+
+        let rotation_key = DataKey::ArbiterRotation(shipment_id.clone());
+
+        let mut proposal: ArbiterRotationProposal = env
+            .storage()
+            .temporary()
+            .get(&rotation_key)
+            .unwrap_or(ArbiterRotationProposal {
+                new_arbiter: new_arbiter.clone(),
+                buyer_agreed: false,
+                supplier_agreed: false,
+            });
+
+        // If the stored proposal has a different arbiter, reset it.
+        if proposal.new_arbiter != new_arbiter {
+            proposal = ArbiterRotationProposal {
+                new_arbiter: new_arbiter.clone(),
+                buyer_agreed: false,
+                supplier_agreed: false,
+            };
+        }
+
+        if is_buyer {
+            proposal.buyer_agreed = true;
+        } else {
+            proposal.supplier_agreed = true;
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "arbiter_rotation_proposed"), shipment_id.clone()),
+            new_arbiter.clone(),
+        );
+
+        if proposal.buyer_agreed && proposal.supplier_agreed {
+            let mut updated_shipment = shipment.clone();
+            updated_shipment.arbiter = new_arbiter.clone();
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Shipment(shipment_id.clone()), &updated_shipment);
+
+            env.storage().temporary().remove(&rotation_key);
+
+            env.events().publish(
+                (Symbol::new(&env, "arbiter_rotated"), shipment_id.clone()),
+                new_arbiter,
+            );
+        } else {
+            env.storage().temporary().set(&rotation_key, &proposal);
+        }
+    }
+
+    // ----------------------------------------------------------
+    // AUTO-CONFIRMATION
+    // ----------------------------------------------------------
+
+    /// Claim auto-confirmation for a milestone when the auto-confirm window has expired.
+    /// Callable by anyone. Transfers payment to supplier and returns penalty to buyer if applicable.
+    pub fn claim_auto_confirmation(
+        env: Env,
+        shipment_id: String,
+        milestone_index: u32,
+    ) {
+        Self::assert_not_paused(&env);
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        if milestone_index as usize >= shipment.milestones.len() as usize {
+            panic!("invalid milestone index");
+        }
+
+        if shipment.auto_confirm_ledgers == 0 {
+            panic!("auto-confirmation not enabled for this shipment");
+        }
+
+        let mut milestone = shipment.milestones.get(milestone_index).unwrap();
+
+        if milestone.status != MilestoneStatus::ProofSubmitted {
+            panic!("milestone is not in ProofSubmitted status");
+        }
+
+        if let Some(proof_ledger) = milestone.proof_submitted_ledger {
+            let auto_confirm_ledger = proof_ledger + shipment.auto_confirm_ledgers;
+            if env.ledger().sequence() < auto_confirm_ledger {
+                panic!("auto-confirmation window has not expired");
+            }
+        } else {
+            panic!("proof_submitted_ledger not set");
+        }
+
+        let mut payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+
+        // Apply late-delivery penalty if configured.
+        let mut penalty_deducted: i128 = 0;
+        if shipment.late_penalty_bps_per_ledger > 0 {
+            if let Some(proof_ledger) = milestone.proof_submitted_ledger {
+                let delay_ledgers = env.ledger().sequence() - proof_ledger;
+                let penalty = (payment * (shipment.late_penalty_bps_per_ledger as i128 * delay_ledgers as i128)) / 10_000;
+                if penalty > 0 && penalty < payment {
+                    penalty_deducted = penalty;
+                    payment -= penalty;
+                }
+            }
+        }
+
+        let mut fee_amount: i128 = 0;
+        let net_payment = Self::deduct_fee(&env, payment, &shipment.token, &mut fee_amount);
+
+        milestone.status = MilestoneStatus::Confirmed;
+        milestone.proof_submitted_ledger = None;
+        shipment.milestones.set(milestone_index, milestone);
+        shipment.released_amount += payment;
+
+        let token_client = token::Client::new(&env, &shipment.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &shipment.supplier,
+            &net_payment,
+        );
+
+        // Return penalty to buyer if any.
+        if penalty_deducted > 0 {
+            let primary_buyer = shipment.buyers.get(0).unwrap();
+            token_client.transfer(
+                &env.current_contract_address(),
+                &primary_buyer,
+                &penalty_deducted,
+            );
+        }
+
+        if Self::all_milestones_done(&shipment) {
+            shipment.status = ShipmentStatus::Completed;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "auto_confirmation_claimed"), shipment_id.clone()),
+            (milestone_index, payment, fee_amount, penalty_deducted),
         );
     }
 

@@ -163,6 +163,12 @@
                         },
                         {
                           "key": {
+                            "symbol": "proof_submitted_ledger"
+                          },
+                          "val": "void"
+                        },
+                        {
+                          "key": {
                             "symbol": "release_after_ledger"
                           },
                           "val": {
@@ -208,6 +214,12 @@
                           "val": {
                             "string": ""
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "proof_submitted_ledger"
+                          },
+                          "val": "void"
                         },
                         {
                           "key": {
@@ -259,6 +271,12 @@
                         },
                         {
                           "key": {
+                            "symbol": "proof_submitted_ledger"
+                          },
+                          "val": "void"
+                        },
+                        {
+                          "key": {
                             "symbol": "release_after_ledger"
                           },
                           "val": {
@@ -285,6 +303,14 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "auto_confirm_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "dispute_cooldown_ledgers"
                       },
                       "val": {
@@ -294,6 +320,14 @@
                     {
                       "key": {
                         "symbol": "holdback_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "late_penalty_bps_per_ledger"
                       },
                       "val": {
                         "u32": 0
@@ -428,6 +462,12 @@
                         },
                         {
                           "key": {
+                            "symbol": "proof_submitted_ledger"
+                          },
+                          "val": "void"
+                        },
+                        {
+                          "key": {
                             "symbol": "release_after_ledger"
                           },
                           "val": {
@@ -473,6 +513,12 @@
                           "val": {
                             "string": ""
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "proof_submitted_ledger"
+                          },
+                          "val": "void"
                         },
                         {
                           "key": {
@@ -524,6 +570,12 @@
                         },
                         {
                           "key": {
+                            "symbol": "proof_submitted_ledger"
+                          },
+                          "val": "void"
+                        },
+                        {
+                          "key": {
                             "symbol": "release_after_ledger"
                           },
                           "val": {
@@ -550,6 +602,14 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "auto_confirm_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "dispute_cooldown_ledgers"
                       },
                       "val": {
@@ -559,6 +619,14 @@
                     {
                       "key": {
                         "symbol": "holdback_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "late_penalty_bps_per_ledger"
                       },
                       "val": {
                         "u32": 0
@@ -888,6 +956,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "auto_confirm_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "buyers"
                       },
                       "val": {
@@ -938,6 +1014,14 @@
                         "symbol": "last_dispute_resolved_ledger"
                       },
                       "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "late_penalty_bps_per_ledger"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
                     },
                     {
                       "key": {
@@ -993,6 +1077,14 @@
                               },
                               {
                                 "key": {
+                                  "symbol": "proof_submitted_ledger"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
+                              },
+                              {
+                                "key": {
                                   "symbol": "release_after_ledger"
                                 },
                                 "val": {
@@ -1041,6 +1133,12 @@
                               },
                               {
                                 "key": {
+                                  "symbol": "proof_submitted_ledger"
+                                },
+                                "val": "void"
+                              },
+                              {
+                                "key": {
                                   "symbol": "release_after_ledger"
                                 },
                                 "val": {
@@ -1086,6 +1184,12 @@
                                 "val": {
                                   "string": ""
                                 }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "proof_submitted_ledger"
+                                },
+                                "val": "void"
                               },
                               {
                                 "key": {
