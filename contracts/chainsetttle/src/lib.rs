@@ -55,8 +55,21 @@ pub enum ShipmentStatus {
 
 #[contracttype]
 #[derive(Clone)]
+pub struct AuditEntry {
+    pub action: Symbol,
+    pub caller: Address,
+    pub ledger: u32,
+    pub detail: Symbol,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct Shipment {
     pub id: String,
+    /// Bounded audit log of status transitions (ring-buffer semantics, max 20).
+    pub audit_log: Vec<AuditEntry>,
+
+
     /// All co-buyers. All must call confirm_milestone for payment to release.
     /// raise_dispute requires only one co-buyer's signature.
     pub buyers: Vec<Address>,
@@ -174,6 +187,10 @@ pub enum DataKey {
     Shipment(String),
     CancelPolicy(String),
     AllShipments,
+    /// Supplier-to-shipments index: Vec<shipment_id> for a given supplier.
+    SupplierShipments(Address),
+    /// Buyer-to-shipments index: Vec<shipment_id> for a given buyer.
+    BuyerShipments(Address),
     Admin,
     /// Ledger sequence when a milestone entered ProofSubmitted state.
     ProofSubmittedAt(String, u32),
@@ -193,6 +210,8 @@ pub enum DataKey {
     ActiveDisputes,
     /// Contract-level statistics.
     ContractStats,
+    /// Per-status index: Vec<String> of shipment IDs with the given status.
+    ShipmentsByStatus(ShipmentStatus),
 }
 
 // ============================================================
@@ -383,6 +402,7 @@ impl ChainSettleContract {
         milestones: Vec<Milestone>,
         options: ShipmentOptions,
     ) -> String {
+
         Self::assert_not_paused(&env);
         let response_deadline = options.response_deadline;
         let penalty_bps = options.penalty_bps;
@@ -456,10 +476,12 @@ impl ChainSettleContract {
             clean_milestones.push_back(m);
         }
 
-        let shipment = Shipment {
+        let mut shipment = Shipment {
             id: shipment_id.clone(),
+            audit_log: Vec::new(&env),
+
             buyers,
-            supplier,
+            supplier: supplier.clone(),
             logistics,
             arbiter,
             token: token.clone(),
@@ -476,6 +498,15 @@ impl ChainSettleContract {
             auto_confirm_ledgers,
         };
 
+        Self::append_audit_entry(
+            &env,
+            &mut shipment,
+            Symbol::new(&env, "shipment_created"),
+            Symbol::new(&env, "create_shipment"),
+        );
+
+
+
         env.storage()
             .persistent()
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
@@ -489,6 +520,37 @@ impl ChainSettleContract {
             .persistent()
             .extend_ttl(&DataKey::Shipment(shipment_id.clone()), 100_000, 6_300_000);
 
+        // Index by supplier for supplier-facing dashboards.
+        let mut supplier_shipments: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SupplierShipments(supplier.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        supplier_shipments.push_back(shipment_id.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::SupplierShipments(supplier.clone()), &supplier_shipments);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::SupplierShipments(supplier.clone()), 100_000, 6_300_000);
+
+        // Index by each buyer for buyer-facing dashboards.
+        for i in 0..shipment.buyers.len() {
+            let buyer = shipment.buyers.get(i).unwrap();
+            let mut buyer_shipments: Vec<String> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::BuyerShipments(buyer.clone()))
+                .unwrap_or_else(|| Vec::new(&env));
+            buyer_shipments.push_back(shipment_id.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::BuyerShipments(buyer.clone()), &buyer_shipments);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::BuyerShipments(buyer.clone()), 100_000, 6_300_000);
+        }
+
         // Add to AllShipments list for pagination.
         let mut all_shipments: Vec<String> = env
             .storage()
@@ -499,6 +561,9 @@ impl ChainSettleContract {
         env.storage()
             .persistent()
             .set(&DataKey::AllShipments, &all_shipments);
+
+        // Add to the Active status index.
+        Self::add_to_status_index(&env, ShipmentStatus::Active, &shipment_id);
 
         // Update total escrowed value for this token.
         let current_escrowed: i128 = env
@@ -752,6 +817,8 @@ impl ChainSettleContract {
                     });
                 stats.completed_shipments += 1;
                 env.storage().instance().set(&DataKey::ContractStats, &stats);
+                // Move from Active to Completed status index.
+                Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
             }
 
             // Decrement total escrowed value.
@@ -831,6 +898,8 @@ impl ChainSettleContract {
                 });
             stats.completed_shipments += 1;
             env.storage().instance().set(&DataKey::ContractStats, &stats);
+            // Move from Active to Completed status index.
+            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
         }
 
         // Decrement total escrowed value.
@@ -942,6 +1011,8 @@ impl ChainSettleContract {
                 });
             stats.completed_shipments += 1;
             env.storage().instance().set(&DataKey::ContractStats, &stats);
+            // Move from Active to Completed status index.
+            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
         }
 
         env.storage()
@@ -1106,6 +1177,8 @@ impl ChainSettleContract {
                 });
             stats.completed_shipments += 1;
             env.storage().instance().set(&DataKey::ContractStats, &stats);
+            // Move from Active to Completed status index.
+            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
         }
 
         env.storage()
@@ -1166,6 +1239,9 @@ impl ChainSettleContract {
         }
 
         shipment.status = ShipmentStatus::Cancelled;
+
+        // Move from Active to Cancelled status index.
+        Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Cancelled, &shipment_id);
 
         env.storage()
             .persistent()
@@ -1273,6 +1349,9 @@ impl ChainSettleContract {
         }
 
         shipment.status = ShipmentStatus::Cancelled;
+
+        // Move from Active to Cancelled status index.
+        Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Cancelled, &shipment_id);
 
         env.storage()
             .persistent()
@@ -1685,6 +1764,8 @@ impl ChainSettleContract {
                 });
             stats.completed_shipments += 1;
             env.storage().instance().set(&DataKey::ContractStats, &stats);
+            // Move from Active to Completed status index.
+            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
         }
 
         // Decrement total escrowed value.
@@ -1789,16 +1870,28 @@ impl ChainSettleContract {
             })
     }
 
-    pub fn list_shipments(env: Env, cursor: Option<u32>, limit: u32) -> (Vec<String>, Option<u32>) {
-        let all_shipments: Vec<String> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AllShipments)
-            .unwrap_or_else(|| Vec::new(&env));
+    pub fn list_shipments(
+        env: Env,
+        cursor: Option<u32>,
+        limit: u32,
+        status_filter: Option<ShipmentStatus>,
+    ) -> (Vec<String>, Option<u32>) {
+        let source_list: Vec<String> = match status_filter {
+            Some(status) => env
+                .storage()
+                .persistent()
+                .get(&DataKey::ShipmentsByStatus(status))
+                .unwrap_or_else(|| Vec::new(&env)),
+            None => env
+                .storage()
+                .persistent()
+                .get(&DataKey::AllShipments)
+                .unwrap_or_else(|| Vec::new(&env)),
+        };
 
         let clamped_limit = if limit > 50 { 50 } else { limit };
         let start_idx = cursor.unwrap_or(0);
-        let total_len = all_shipments.len() as u32;
+        let total_len = source_list.len() as u32;
 
         if start_idx >= total_len {
             return (Vec::new(&env), None);
@@ -1807,7 +1900,7 @@ impl ChainSettleContract {
         let mut result: Vec<String> = Vec::new(&env);
         let mut idx = start_idx;
         while idx < total_len && (result.len() as u32) < clamped_limit {
-            result.push_back(all_shipments.get(idx).unwrap());
+            result.push_back(source_list.get(idx).unwrap());
             idx += 1;
         }
 
@@ -1818,6 +1911,20 @@ impl ChainSettleContract {
         };
 
         (result, next_cursor)
+    }
+
+    pub fn get_shipments_by_supplier(env: Env, supplier: Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SupplierShipments(supplier))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn get_shipments_by_buyer(env: Env, buyer: Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BuyerShipments(buyer))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     // ----------------------------------------------------------
@@ -1876,7 +1983,32 @@ impl ChainSettleContract {
             .unwrap_or_else(|| panic!("shipment not found"))
     }
 
+    fn append_audit_entry(env: &Env, shipment: &mut Shipment, action: Symbol, detail: Symbol) {
+        // Maintain a bounded ring-buffer of max 20 entries.
+        let entry = AuditEntry {
+            action,
+            caller: env.storage().instance().get(&DataKey::Admin).unwrap_or_else(|| panic!("unauthorized")),
+            ledger: env.ledger().sequence(),
+
+            detail,
+        };
+
+        let max: usize = 20;
+        if shipment.audit_log.len() as usize >= max {
+            // Evict the oldest (index 0) by shifting left.
+            let mut new_log: Vec<AuditEntry> = Vec::new(env);
+            // Start from 1 to drop the first element.
+            for i in 1..shipment.audit_log.len() {
+                new_log.push_back(shipment.audit_log.get(i).unwrap());
+            }
+            shipment.audit_log = new_log;
+        }
+
+        shipment.audit_log.push_back(entry);
+    }
+
     fn all_milestones_done(shipment: &Shipment) -> bool {
+
         for i in 0..shipment.milestones.len() {
             let s = shipment.milestones.get(i).unwrap().status;
             if s != MilestoneStatus::Confirmed && s != MilestoneStatus::Resolved {
@@ -1899,6 +2031,50 @@ impl ChainSettleContract {
             }
         }
         gross
+    }
+
+    /// Append a shipment ID to the per-status index list.
+    fn add_to_status_index(env: &Env, status: ShipmentStatus, shipment_id: &String) {
+        let key = DataKey::ShipmentsByStatus(status);
+        let mut list: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        list.push_back(shipment_id.clone());
+        env.storage().persistent().set(&key, &list);
+    }
+
+    /// Remove a shipment ID from the per-status index list.
+    fn remove_from_status_index(env: &Env, status: ShipmentStatus, shipment_id: &String) {
+        let key = DataKey::ShipmentsByStatus(status);
+        let list: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        let mut new_list: Vec<String> = Vec::new(env);
+        let mut removed = false;
+        for i in 0..list.len() {
+            let id = list.get(i).unwrap();
+            if !removed && id == *shipment_id {
+                removed = true;
+            } else {
+                new_list.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&key, &new_list);
+    }
+
+    /// Move a shipment ID from one status index to another (used on status transitions).
+    fn move_shipment_status_index(
+        env: &Env,
+        from: ShipmentStatus,
+        to: ShipmentStatus,
+        shipment_id: &String,
+    ) {
+        Self::remove_from_status_index(env, from, shipment_id);
+        Self::add_to_status_index(env, to, shipment_id);
     }
 }
 
