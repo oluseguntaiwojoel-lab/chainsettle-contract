@@ -1805,6 +1805,29 @@ impl ChainSettleContract {
             .unwrap_or_else(|| panic!("invalid milestone index"))
     }
 
+    pub fn get_completion_percentage(env: Env, shipment_id: String) -> u32 {
+        let shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.total_amount <= 0 {
+            return 0;
+        }
+        if shipment.released_amount <= 0 {
+            return 0;
+        }
+
+        // Clamp to [0, 100] to avoid any unexpected rounding / state drift.
+        let numerator: i128 = shipment.released_amount * 100;
+        let mut pct: i128 = numerator / shipment.total_amount;
+        if pct < 0 {
+            pct = 0;
+        }
+        if pct > 100 {
+            pct = 100;
+        }
+
+        pct as u32
+    }
+
     pub fn get_escrow_balance(env: Env, shipment_id: String) -> i128 {
         let shipment = Self::get_shipment_internal(&env, &shipment_id);
         shipment.total_amount - shipment.released_amount

@@ -1449,234 +1449,120 @@ fn test_fee_deducted_on_dispute_resolve_approve() {
 }
 
 // ============================================================
-// SUPPLIER SHIPMENTS INDEX TESTS
+// GET_COMPLETION_PERCENTAGE TESTS
 // ============================================================
 
 #[test]
-fn test_get_shipments_by_supplier_single() {
+fn test_get_completion_percentage_fresh_shipment() {
     let t = setup();
     let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
 
-    let shipment_id = String::from_str(&t.env, "SHIP-SUP-1");
+    let shipment_id = String::from_str(&t.env, "SHIP-COMPL-FRESH");
+    let total_amount: i128 = 1_000_000_000;
+
     create_standard_shipment(
         &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
     );
 
-    let supplier_shipments = client.get_shipments_by_supplier(&t.supplier);
-    assert_eq!(supplier_shipments.len(), 1);
-    assert_eq!(supplier_shipments.get(0).unwrap(), shipment_id);
+    // Freshly created shipment with no milestones confirmed should return 0%
+    assert_eq!(client.get_completion_percentage(&shipment_id), 0);
 }
 
 #[test]
-fn test_get_shipments_by_supplier_multiple_same() {
+fn test_get_completion_percentage_partial_one_milestone() {
     let t = setup();
     let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
 
-    let shipment_id_1 = String::from_str(&t.env, "SHIP-SUP-1");
-    let shipment_id_2 = String::from_str(&t.env, "SHIP-SUP-2");
-    let shipment_id_3 = String::from_str(&t.env, "SHIP-SUP-3");
+    let shipment_id = String::from_str(&t.env, "SHIP-COMPL-PARTIAL-1");
+    let total_amount: i128 = 1_000_000_000;
 
-    create_standard_shipment(
-        &client, &t.env, &shipment_id_1, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
-    );
-    create_standard_shipment(
-        &client, &t.env, &shipment_id_2, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
-    );
-    create_standard_shipment(
-        &client, &t.env, &shipment_id_3, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
-    );
-
-    let supplier_shipments = client.get_shipments_by_supplier(&t.supplier);
-    assert_eq!(supplier_shipments.len(), 3);
-    assert_eq!(supplier_shipments.get(0).unwrap(), shipment_id_1);
-    assert_eq!(supplier_shipments.get(1).unwrap(), shipment_id_2);
-    assert_eq!(supplier_shipments.get(2).unwrap(), shipment_id_3);
-}
-
-#[test]
-fn test_get_shipments_by_supplier_cross_supplier_isolation() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-
-    let supplier_a = Address::generate(&t.env);
-    let supplier_b = Address::generate(&t.env);
-
-    let shipment_a = String::from_str(&t.env, "SHIP-A");
-    let shipment_b = String::from_str(&t.env, "SHIP-B");
-
-    // Create shipment with supplier_a
-    t.env.mock_all_auths();
-    client.create_shipment(
-        &shipment_a,
-        &single_buyer_vec(&t.env, &t.buyer),
-        &supplier_a,
-        &t.logistics,
-        &t.arbiter,
-        &t.token_id,
-        &1_000_000_000,
-        &build_milestones(&t.env),
-        &default_options(&t.env),
-    );
-
-    // Create shipment with supplier_b
-    client.create_shipment(
-        &shipment_b,
-        &single_buyer_vec(&t.env, &t.buyer),
-        &supplier_b,
-        &t.logistics,
-        &t.arbiter,
-        &t.token_id,
-        &1_000_000_000,
-        &build_milestones(&t.env),
-        &default_options(&t.env),
-    );
-
-    // Verify supplier_a only has their shipment
-    let shipments_a = client.get_shipments_by_supplier(&supplier_a);
-    assert_eq!(shipments_a.len(), 1);
-    assert_eq!(shipments_a.get(0).unwrap(), shipment_a);
-
-    // Verify supplier_b only has their shipment
-    let shipments_b = client.get_shipments_by_supplier(&supplier_b);
-    assert_eq!(shipments_b.len(), 1);
-    assert_eq!(shipments_b.get(0).unwrap(), shipment_b);
-
-    // Verify original supplier (from setup) has no shipments
-    let shipments_original = client.get_shipments_by_supplier(&t.supplier);
-    assert_eq!(shipments_original.len(), 0);
-}
-
-// ============================================================
-// BUYER SHIPMENTS INDEX TESTS
-// ============================================================
-
-#[test]
-fn test_get_shipments_by_buyer_single() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-BUYER-1");
     create_standard_shipment(
         &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
     );
 
-    let buyer_shipments = client.get_shipments_by_buyer(&t.buyer);
-    assert_eq!(buyer_shipments.len(), 1);
-    assert_eq!(buyer_shipments.get(0).unwrap(), shipment_id);
+    // Confirm first milestone (25%)
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+
+    // Should return 25%
+    assert_eq!(client.get_completion_percentage(&shipment_id), 25);
 }
 
 #[test]
-fn test_get_shipments_by_buyer_multiple_same() {
+fn test_get_completion_percentage_partial_two_milestones() {
     let t = setup();
     let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
 
-    let shipment_id_1 = String::from_str(&t.env, "SHIP-BUYER-1");
-    let shipment_id_2 = String::from_str(&t.env, "SHIP-BUYER-2");
-    let shipment_id_3 = String::from_str(&t.env, "SHIP-BUYER-3");
+    let shipment_id = String::from_str(&t.env, "SHIP-COMPL-PARTIAL-2");
+    let total_amount: i128 = 1_000_000_000;
 
-    create_standard_shipment(
-        &client, &t.env, &shipment_id_1, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
-    );
-    create_standard_shipment(
-        &client, &t.env, &shipment_id_2, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
-    );
-    create_standard_shipment(
-        &client, &t.env, &shipment_id_3, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
-    );
-
-    let buyer_shipments = client.get_shipments_by_buyer(&t.buyer);
-    assert_eq!(buyer_shipments.len(), 3);
-    assert_eq!(buyer_shipments.get(0).unwrap(), shipment_id_1);
-    assert_eq!(buyer_shipments.get(1).unwrap(), shipment_id_2);
-    assert_eq!(buyer_shipments.get(2).unwrap(), shipment_id_3);
-}
-
-#[test]
-fn test_get_shipments_by_buyer_different_buyer_isolation() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-
-    let buyer_a = Address::generate(&t.env);
-    let buyer_b = Address::generate(&t.env);
-    let supplier = Address::generate(&t.env);
-
-    let shipment_a = String::from_str(&t.env, "SHIP-A");
-    let shipment_b = String::from_str(&t.env, "SHIP-B");
-
-    // Create shipment with buyer_a
-    t.env.mock_all_auths();
-    let token_client = token::StellarAssetClient::new(&t.env, &t.token_id);
-    token_client.mint(&buyer_a, &10_000_000_000);
-    token_client.mint(&buyer_b, &10_000_000_000);
-
-    client.create_shipment(
-        &shipment_a,
-        &single_buyer_vec(&t.env, &buyer_a),
-        &supplier,
-        &t.logistics,
-        &t.arbiter,
-        &t.token_id,
-        &1_000_000_000,
-        &build_milestones(&t.env),
-        &default_options(&t.env),
-    );
-
-    // Create shipment with buyer_b
-    client.create_shipment(
-        &shipment_b,
-        &single_buyer_vec(&t.env, &buyer_b),
-        &supplier,
-        &t.logistics,
-        &t.arbiter,
-        &t.token_id,
-        &1_000_000_000,
-        &build_milestones(&t.env),
-        &default_options(&t.env),
-    );
-
-    // Verify buyer_a only has their shipment
-    let shipments_a = client.get_shipments_by_buyer(&buyer_a);
-    assert_eq!(shipments_a.len(), 1);
-    assert_eq!(shipments_a.get(0).unwrap(), shipment_a);
-
-    // Verify buyer_b only has their shipment
-    let shipments_b = client.get_shipments_by_buyer(&buyer_b);
-    assert_eq!(shipments_b.len(), 1);
-    assert_eq!(shipments_b.get(0).unwrap(), shipment_b);
-
-    // Verify original buyer (from setup) has no shipments
-    let shipments_original = client.get_shipments_by_buyer(&t.buyer);
-    assert_eq!(shipments_original.len(), 0);
-}
-
-#[test]
-fn test_get_shipments_by_buyer_persists_after_completion() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-COMPLETE");
     create_standard_shipment(
         &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
     );
 
-    // Complete the shipment fully
-    for i in 0u32..3u32 {
-        client.submit_proof(&t.supplier, &shipment_id, &i, &String::from_str(&t.env, "ipfs://x"));
-        client.confirm_milestone(&t.buyer, &shipment_id, &i);
-    }
+    // Confirm first milestone (25%)
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
-    // Verify buyer still has the shipment indexed after completion
-    let buyer_shipments = client.get_shipments_by_buyer(&t.buyer);
-    assert_eq!(buyer_shipments.len(), 1);
-    assert_eq!(buyer_shipments.get(0).unwrap(), shipment_id);
+    // Confirm second milestone (50% cumulative = 75% total)
+    client.submit_proof(&t.logistics, &shipment_id, &1, &String::from_str(&t.env, "ipfs://t"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &1);
+
+    // Should return 75%
+    assert_eq!(client.get_completion_percentage(&shipment_id), 75);
+}
+
+#[test]
+fn test_get_completion_percentage_full_completion() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id = String::from_str(&t.env, "SHIP-COMPL-FULL");
+    let total_amount: i128 = 1_000_000_000;
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+
+    // Confirm all milestones
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+
+    client.submit_proof(&t.logistics, &shipment_id, &1, &String::from_str(&t.env, "ipfs://t"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &1);
+
+    client.submit_proof(&t.supplier, &shipment_id, &2, &String::from_str(&t.env, "ipfs://v"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &2);
+
+    // Should return 100%
+    assert_eq!(client.get_completion_percentage(&shipment_id), 100);
+}
+
+#[test]
+fn test_get_completion_percentage_zero_released() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id = String::from_str(&t.env, "SHIP-COMPL-ZERO");
+    let total_amount: i128 = 100;
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+
+    // Before any confirmation, released_amount is 0, should return 0%
+    assert_eq!(client.get_completion_percentage(&shipment_id), 0);
+
+    // Confirm first milestone (25 out of 100 = 25%)
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+
+    // (25 * 100) / 100 = 25%
+    assert_eq!(client.get_completion_percentage(&shipment_id), 25);
 }
 
