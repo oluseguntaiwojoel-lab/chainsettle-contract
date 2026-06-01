@@ -1,5 +1,6 @@
 # ChainSettle — Contract Repo
 
+[![CI](https://github.com/shakurJJ/chainsettle-contract/actions/workflows/ci.yml/badge.svg)](https://github.com/shakurJJ/chainsettle-contract/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/shakurJJ/chainsettle-contract/branch/main/graph/badge.svg)](https://codecov.io/gh/shakurJJ/chainsettle-contract)
 
 > **Milestone-based supply chain escrow on Stellar Soroban**

@@ -1,0 +1,135 @@
+name: Optimize WASM
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  WASM_PATH: target/wasm32v1-none/release/chainsetttle.wasm
+  WASM_OPT_PATH: target/wasm32v1-none/release/chainsetttle.optimized.wasm
+  SIZES_CSV: sizes.csv
+  # Alert threshold: fail (non-blocking warning) if optimized size grows > 5%.
+  GROWTH_THRESHOLD_PCT: 5
+
+jobs:
+  optimize:
+    name: Optimize & Track Size
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to upload release assets on tags
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-opt-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-opt-
+
+      - name: Install stellar-cli
+        run: cargo install --locked stellar-cli --features opt
+
+      - name: Build WASM
+        run: stellar contract build
+
+      - name: Record raw size
+        id: raw
+        run: |
+          RAW=$(wc -c < "$WASM_PATH")
+          echo "raw_size=$RAW" >> "$GITHUB_OUTPUT"
+          echo "Raw WASM size: ${RAW} bytes"
+
+      - name: Optimize WASM
+        run: stellar contract optimize --wasm "$WASM_PATH"
+
+      - name: Record optimized size
+        id: opt
+        run: |
+          OPT=$(wc -c < "$WASM_OPT_PATH")
+          echo "opt_size=$OPT" >> "$GITHUB_OUTPUT"
+          echo "Optimized WASM size: ${OPT} bytes"
+
+      - name: Download previous sizes artifact
+        id: prev
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          name: wasm-sizes
+          workflow: optimize.yml
+          branch: main
+          path: prev-sizes/
+
+      - name: Append to sizes.csv and check growth
+        id: size-check
+        run: |
+          GIT_SHA="${{ github.sha }}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          RAW="${{ steps.raw.outputs.raw_size }}"
+          OPT="${{ steps.opt.outputs.opt_size }}"
+
+          # Create or append to sizes.csv.
+          if [ ! -f "$SIZES_CSV" ]; then
+            echo "git_sha,date,raw_size,optimized_size" > "$SIZES_CSV"
+          fi
+          echo "${GIT_SHA},${DATE},${RAW},${OPT}" >> "$SIZES_CSV"
+
+          echo "--- Size summary ---"
+          echo "Raw:       ${RAW} bytes"
+          echo "Optimized: ${OPT} bytes"
+
+          # Compare against previous build if available.
+          PREV_CSV="prev-sizes/$SIZES_CSV"
+          if [ -f "$PREV_CSV" ]; then
+            PREV_OPT=$(tail -1 "$PREV_CSV" | cut -d',' -f4)
+            echo "Previous optimized size: ${PREV_OPT} bytes"
+
+            if [ "$PREV_OPT" -gt 0 ]; then
+              # Integer arithmetic: growth_pct = (OPT - PREV_OPT) * 100 / PREV_OPT
+              GROWTH=$(( (OPT - PREV_OPT) * 100 / PREV_OPT ))
+              echo "Size change: ${GROWTH}%"
+
+              if [ "$GROWTH" -gt "$GROWTH_THRESHOLD_PCT" ]; then
+                echo "::warning::Optimized WASM grew by ${GROWTH}% (${PREV_OPT} → ${OPT} bytes), exceeding the ${GROWTH_THRESHOLD_PCT}% threshold"
+                echo "growth_warning=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "✓ Size growth ${GROWTH}% is within the ${GROWTH_THRESHOLD_PCT}% threshold"
+                echo "growth_warning=false" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          else
+            echo "No previous artifact found — skipping growth check"
+            echo "growth_warning=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload sizes artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-sizes
+          path: ${{ env.SIZES_CSV }}
+          retention-days: 90
+
+      - name: Upload optimized WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chainsetttle-optimized-wasm
+          path: ${{ env.WASM_OPT_PATH }}
+          retention-days: 30
+
+      # Attach optimized WASM to GitHub Release on tagged pushes.
+      - name: Upload optimized WASM to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.WASM_OPT_PATH }}
